@@ -61,7 +61,10 @@ install-alloy-repo:
 	@printf '[grafana]\nname=grafana\nbaseurl=https://rpm.grafana.com\nrepo_gpgcheck=1\nenabled=1\ngpgcheck=1\ngpgkey=https://rpm.grafana.com/gpg.key\nsslverify=1\nsslcacert=/etc/pki/tls/certs/ca-bundle.crt\n' | sudo tee /etc/yum.repos.d/grafana.repo > /dev/null
 
 install-alloy: install-alloy-repo
+	@echo "==> Grafana GPG 鍵をインポート"
+	sudo rpm --import https://rpm.grafana.com/gpg.key
 	@echo "==> Alloy をインストール"
+	sudo dnf clean metadata --disablerepo="*" --enablerepo="grafana"
 	sudo dnf -y install alloy
 
 setup-alloy-env-web:
