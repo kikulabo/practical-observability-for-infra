@@ -1,0 +1,130 @@
+//
+// Outputs
+//
+otelcol.exporter.otlp "lgtm_stack" {
+  client {
+    endpoint = sys.env("ALLOY_LGTM_OTELCOL_URL")
+    tls {
+      insecure = true
+    }
+  }
+}
+
+// Metrics
+otelcol.receiver.prometheus "default" {
+  output {
+    metrics = [otelcol.processor.resourcedetection.default.input]
+  }
+}
+
+// Logs
+otelcol.receiver.loki "default" {
+  output {
+    logs = [otelcol.processor.transform.log_service_name.input]
+  }
+}
+
+// Map Loki "job" label to OTel "service.name" so Loki indexes it
+otelcol.processor.transform "log_service_name" {
+  error_mode = "ignore"
+  log_statements {
+    context = "log"
+    statements = [
+      `set(resource.attributes["service.name"], attributes["job"]) where attributes["job"] != nil`,
+    ]
+  }
+  output {
+    logs = [otelcol.processor.resourcedetection.default.input]
+  }
+}
+
+// Resource detection (add hostname to all telemetry)
+otelcol.processor.resourcedetection "default" {
+  detectors = ["system"]
+  system {
+    hostname_sources = ["os"]
+  }
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+// Batch processing
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.otlp.lgtm_stack.input]
+    logs    = [otelcol.exporter.otlp.lgtm_stack.input]
+    traces  = [otelcol.exporter.otlp.lgtm_stack.input]
+  }
+}
+
+//
+// Metrics
+//
+
+// Host metrics
+prometheus.exporter.unix "host" {
+  include_exporter_metrics = true
+}
+
+prometheus.scrape "unix" {
+  targets         = prometheus.exporter.unix.host.targets
+  scrape_interval = "5s"
+  scrape_timeout  = "4s"
+  job_name        = "integrations/unix"
+  forward_to      = [otelcol.receiver.prometheus.default.receiver]
+}
+
+//
+// Logs
+//
+loki.relabel "syslog" {
+  forward_to = []
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+}
+
+loki.source.journal "syslog" {
+  forward_to    = [otelcol.receiver.loki.default.receiver]
+  labels        = {job = "syslog"}
+  relabel_rules = loki.relabel.syslog.rules
+}
+
+loki.source.file "nginx" {
+  targets = [
+    {__path__ = "/var/log/nginx/access.log", job = "nginx", level = "info"},
+    {__path__ = "/var/log/nginx/error.log",  job = "nginx", level = "error"},
+  ]
+  forward_to = [otelcol.receiver.loki.default.receiver]
+}
+
+//
+// Profiles via eBPF (Pyroscope)
+//
+pyroscope.write "admin" {
+  endpoint {
+    url = sys.env("ALLOY_PYROSCOPE_URL")
+  }
+}
+
+pyroscope.ebpf "default" {
+  forward_to = [pyroscope.write.admin.receiver]
+}
+
+//
+// Traces via eBPF (Beyla)
+//
+beyla.ebpf "auto_instrumentation" {
+  discovery {
+    instrument {
+      open_ports = "80,8080"
+    }
+  }
+  output {
+    traces = [otelcol.processor.resourcedetection.default.input]
+  }
+}
