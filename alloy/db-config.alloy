@@ -1,0 +1,179 @@
+//
+// Outputs
+//
+otelcol.exporter.otlp "lgtm_stack" {
+  client {
+    endpoint = sys.env("ALLOY_LGTM_OTELCOL_URL")
+    tls {
+      insecure = true
+    }
+  }
+}
+
+// Metrics
+otelcol.receiver.prometheus "default" {
+  output {
+    metrics = [otelcol.processor.resourcedetection.default.input]
+  }
+}
+
+// Logs
+otelcol.receiver.loki "default" {
+  output {
+    logs = [otelcol.processor.transform.log_service_name.input]
+  }
+}
+
+// Map Loki "job" label to OTel "service.name" so Loki indexes it
+otelcol.processor.transform "log_service_name" {
+  error_mode = "ignore"
+  log_statements {
+    context = "log"
+    statements = [
+      `set(resource.attributes["service.name"], attributes["job"]) where attributes["job"] != nil`,
+    ]
+  }
+  output {
+    logs = [otelcol.processor.resourcedetection.default.input]
+  }
+}
+
+// Resource detection (add hostname to all telemetry)
+otelcol.processor.resourcedetection "default" {
+  detectors = ["system"]
+  system {
+    hostname_sources = ["os"]
+  }
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+// Batch processing
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.otlp.lgtm_stack.input]
+    logs    = [otelcol.exporter.otlp.lgtm_stack.input]
+    traces  = [otelcol.exporter.otlp.lgtm_stack.input]
+  }
+}
+
+//
+// Metrics
+//
+
+// Host metrics
+prometheus.exporter.unix "host" {
+  include_exporter_metrics = true
+}
+
+prometheus.scrape "unix" {
+  targets         = prometheus.exporter.unix.host.targets
+  scrape_interval = "60s"
+  scrape_timeout  = "4s"
+  job_name        = "integrations/unix"
+  forward_to      = [otelcol.receiver.prometheus.default.receiver]
+}
+
+// MariaDB metrics
+prometheus.exporter.mysql "mariadb" {
+  data_source_name = sys.env("ALLOY_MARIADB_DSN")
+}
+
+prometheus.scrape "mariadb" {
+  targets         = prometheus.exporter.mysql.mariadb.targets
+  scrape_interval = "60s"
+  scrape_timeout  = "4s"
+  job_name        = "integrations/mariadb"
+  forward_to      = [otelcol.receiver.prometheus.default.receiver]
+}
+
+//
+// Logs
+//
+loki.relabel "syslog" {
+  forward_to = []
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+}
+
+loki.source.journal "syslog" {
+  forward_to    = [otelcol.receiver.loki.default.receiver]
+  labels        = {job = "syslog"}
+  relabel_rules = loki.relabel.syslog.rules
+}
+
+//
+// Profiles via eBPF (Pyroscope)
+//
+pyroscope.write "admin" {
+  endpoint {
+    url = sys.env("ALLOY_PYROSCOPE_URL")
+  }
+}
+
+pyroscope.ebpf "default" {
+  forward_to = [pyroscope.write.admin.receiver]
+}
+
+loki.source.file "mariadb_error" {
+  targets = [
+    {__path__ = "/var/log/mariadb/error.log", job = "mariadb", type = "error"},
+  ]
+  forward_to = [otelcol.receiver.loki.default.receiver]
+}
+
+loki.source.file "mariadb_slow" {
+  targets = [
+    {__path__ = "/var/log/mariadb/slow.log",  job = "mariadb", type = "slow"},
+  ]
+  forward_to = [loki.process.mariadb_slowlog.receiver]
+}
+
+// 複数行のマージ + メタデータ抽出
+loki.process "mariadb_slowlog" {
+  forward_to = [otelcol.receiver.loki.default.receiver]
+
+  // 複数行を1エントリにまとめる。先頭行のパターン: "# Time:"
+  stage.multiline {
+    firstline     = "^# Time:"
+    max_wait_time = "5s"
+    max_lines     = 1000
+  }
+
+  // ラベルとして抽出
+  stage.regex {
+    expression = "# Query_time: (?P<query_time>[0-9.]+)\\s+Lock_time: (?P<lock_time>[0-9.]+)\\s+Rows_sent: (?P<rows_sent>\\d+)\\s+Rows_examined: (?P<rows_examined>\\d+)"
+  }
+
+  // メタデータ化
+  stage.structured_metadata {
+    values = {
+      query_time    = "query_time",
+      lock_time     = "lock_time",
+      rows_sent     = "rows_sent",
+      rows_examined = "rows_examined",
+    }
+  }
+
+  // 静的ラベル付与
+  stage.static_labels {
+    values = {
+      log_type = "slow_query",
+    }
+  }
+
+  // タイムスタンプを# Time: 行から抽出
+  stage.regex {
+    expression = "# Time: (?P<log_time>\\S+)"
+  }
+
+  stage.timestamp {
+    source = "log_time"
+    format = "2006-01-02T15:04:05.000000Z"
+  }
+}

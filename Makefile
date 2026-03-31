@@ -1,0 +1,278 @@
+# ============================================================
+# Grafana Alloy ハンズオン Makefile
+# EC2 インスタンス上で使用する
+# Usage:
+#   make setup-db    (DBサーバーで実行)
+#   make setup-web   (Webサーバーで実行)
+#   make setup-admin (管理サーバーで実行)
+# ============================================================
+
+SHELL := /bin/bash
+
+# リポジトリルート（クローン先）
+REPO_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
+
+# ============================================================
+# 共通ターゲット
+# ============================================================
+
+.PHONY: setup-hostname-web setup-hostname-db setup-hostname-admin
+.PHONY: setup-web setup-db setup-admin
+.PHONY: install-alloy-repo install-alloy setup-alloy-env-web setup-alloy-env-db setup-alloy-env-admin
+.PHONY: start-alloy help
+
+help: ## ヘルプを表示
+	@echo "Usage:"
+	@echo "  make setup-db       DBサーバーのセットアップ"
+	@echo "  make setup-web      Webサーバーのセットアップ"
+	@echo "  make setup-admin    管理サーバーのセットアップ"
+
+# ------------------------------------------------------------
+# ホスト名設定
+# ------------------------------------------------------------
+
+setup-hostname-web:
+	sudo sed -i 's/preserve_hostname: false/preserve_hostname: true/' /etc/cloud/cloud.cfg
+	sudo hostnamectl set-hostname todo-web
+	@echo "==> ホスト名を todo-web に設定しました"
+
+setup-hostname-db:
+	sudo sed -i 's/preserve_hostname: false/preserve_hostname: true/' /etc/cloud/cloud.cfg
+	sudo hostnamectl set-hostname todo-db
+	@echo "==> ホスト名を todo-db に設定しました"
+
+setup-hostname-admin:
+	sudo sed -i 's/preserve_hostname: false/preserve_hostname: true/' /etc/cloud/cloud.cfg
+	sudo hostnamectl set-hostname todo-admin
+	@echo "==> ホスト名を todo-admin に設定しました"
+
+# ------------------------------------------------------------
+# Grafana Alloy (共通)
+# ------------------------------------------------------------
+
+install-alloy-repo:
+	@echo "==> Grafana リポジトリを追加"
+	@printf '[grafana]\nname=grafana\nbaseurl=https://rpm.grafana.com\nrepo_gpgcheck=1\nenabled=1\ngpgcheck=1\ngpgkey=https://rpm.grafana.com/gpg.key\nsslverify=1\nsslcacert=/etc/pki/tls/certs/ca-bundle.crt\n' | sudo tee /etc/yum.repos.d/grafana.repo > /dev/null
+
+install-alloy: install-alloy-repo
+	@echo "==> Grafana GPG 鍵をインポート"
+	sudo rpm --import https://rpm.grafana.com/gpg.key
+	@echo "==> Alloy をインストール"
+	sudo dnf clean metadata --disablerepo="*" --enablerepo="grafana"
+	sudo dnf -y install alloy
+
+setup-alloy-env-web:
+	@echo "==> Alloy 環境変数を設定 (Web)"
+	@printf 'CUSTOM_ARGS="--stability.level=generally-available"\nCONFIG_FILE="/etc/alloy/config.alloy"\nALLOY_LGTM_OTELCOL_URL="10.0.1.30:4317"\nALLOY_PYROSCOPE_URL="http://10.0.1.30:4040"\n' | sudo tee /etc/sysconfig/alloy > /dev/null
+
+setup-alloy-env-db:
+	@echo "==> Alloy 環境変数を設定 (DB)"
+	@printf 'CUSTOM_ARGS="--stability.level=generally-available"\nCONFIG_FILE="/etc/alloy/config.alloy"\nALLOY_LGTM_OTELCOL_URL="10.0.1.30:4317"\nALLOY_MARIADB_DSN="todoapp:todoapp@(localhost:3306)/todoapp"\nALLOY_PYROSCOPE_URL="http://10.0.1.30:4040"\n' | sudo tee /etc/sysconfig/alloy > /dev/null
+
+setup-alloy-env-admin:
+	@echo "==> Alloy 環境変数を設定 (Admin)"
+	@printf 'CUSTOM_ARGS="--stability.level=generally-available"\nCONFIG_FILE="/etc/alloy/config.alloy"\nALLOY_LGTM_OTELCOL_URL="10.0.1.30:4317"\nALLOY_PYROSCOPE_URL="http://10.0.1.30:4040"\n' | sudo tee /etc/sysconfig/alloy > /dev/null
+
+setup-alloy-override-web:
+	@echo "==> Alloy systemd override を設定 (eBPF 用)"
+	sudo mkdir -p /etc/systemd/system/alloy.service.d
+	sudo cp $(REPO_DIR)/systemd/alloy-override.conf /etc/systemd/system/alloy.service.d/override.conf
+	sudo systemctl daemon-reload
+
+start-alloy:
+	@echo "==> Alloy を起動"
+	sudo systemctl restart alloy
+	sudo systemctl enable alloy
+	sudo systemctl status alloy --no-pager
+
+# ============================================================
+# DBサーバー (setup-db)
+# ============================================================
+
+install-mariadb:
+	@echo "==> MariaDB をインストール"
+	sudo dnf -y install mariadb1011-server
+
+start-mariadb:
+	@echo "==> MariaDB を起動"
+	sudo systemctl start mariadb
+	sudo systemctl enable mariadb
+
+init-mariadb:
+	@echo "==> MariaDB を初期設定"
+	@echo "==> アプリケーション用 DB を作成"
+	@if sudo mysql -u root -e "USE todoapp; SELECT 1 FROM todos LIMIT 1" > /dev/null 2>&1; then \
+		echo "==> todoapp データベースは作成済み"; \
+	else \
+		sudo mysql -u root < $(REPO_DIR)/mariadb/init.sql; \
+	fi
+	@echo "==> todoapp ユーザーの権限を確認"
+	@sudo mysql -u root -e "GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'todoapp'@'%'; FLUSH PRIVILEGES;" 2>/dev/null || true
+
+configure-mariadb:
+	@echo "==> MariaDB の設定を変更 (bind-address, ログ)"
+	@if ! grep -q '^bind-address' /etc/my.cnf.d/mariadb-server.cnf; then \
+		sudo sed -i '/^\[mysqld\]/a\bind-address = 0.0.0.0\nslow-query-log = 1\nslow-query-log-file = /var/log/mariadb/slow.log\nlong-query-time = 0' /etc/my.cnf.d/mariadb-server.cnf; \
+	else \
+		echo "==> MariaDB の設定は追記済み"; \
+	fi
+	sudo systemctl restart mariadb
+
+verify-mariadb:
+	@echo "==> MariaDB の動作確認"
+	sudo systemctl status mariadb --no-pager
+	mysql -u todoapp -ptodoapp -e "USE todoapp; SELECT COUNT(*) AS todo_count FROM todos;"
+
+setup-db: setup-hostname-db install-mariadb start-mariadb init-mariadb configure-mariadb verify-mariadb install-alloy setup-alloy-env-db
+	@echo "==> Alloy ユーザーを mysql グループに追加"
+	sudo usermod -aG mysql alloy
+	@echo "==> Alloy 設定ファイルをコピー (DB)"
+	sudo cp $(REPO_DIR)/alloy/db-config.alloy /etc/alloy/config.alloy
+	$(MAKE) start-alloy
+	@echo ""
+	@echo "============================================"
+	@echo " DBサーバーのセットアップが完了しました"
+	@echo "============================================"
+
+# ============================================================
+# Webサーバー (setup-web)
+# ============================================================
+
+install-nginx:
+	@echo "==> nginx をインストール"
+	sudo dnf -y install nginx
+
+deploy-app:
+	@echo "==> ToDoApp を配置"
+	mkdir -p $(HOME)/app
+	cp $(REPO_DIR)/app/todoapp $(HOME)/app/todoapp
+	chmod +x $(HOME)/app/todoapp
+
+setup-todoapp-service:
+	@echo "==> ToDoApp の systemd ユニットを設定"
+	sudo cp $(REPO_DIR)/systemd/todoapp.service /etc/systemd/system/todoapp.service
+	sudo systemctl daemon-reload
+	sudo systemctl restart todoapp
+	sudo systemctl enable todoapp
+	sudo systemctl status todoapp --no-pager
+
+configure-nginx:
+	@echo "==> nginx を設定"
+	sudo cp $(REPO_DIR)/nginx/default /etc/nginx/conf.d/todoapp.conf
+	@# nginx.conf のデフォルト server ブロックを確実にコメントアウト（ネスト対応・冪等）
+	@sudo awk ' \
+		/^[[:space:]]*server[[:space:]]*\{/ && !in_server && !/^#/ { in_server=1; depth=0 } \
+		in_server { \
+			n=split($$0, c, ""); \
+			for(i=1;i<=n;i++){ if(c[i]=="{")depth++; if(c[i]=="}")depth-- } \
+			if($$0 !~ /^#/) printf "#%s\n", $$0; else print; \
+			if(depth<=0) in_server=0; \
+			next \
+		} \
+		{ print }' /etc/nginx/nginx.conf > /tmp/nginx.conf.tmp \
+		&& sudo mv /tmp/nginx.conf.tmp /etc/nginx/nginx.conf \
+		&& sudo chmod 644 /etc/nginx/nginx.conf
+	sudo nginx -t
+	sudo systemctl restart nginx
+	sudo systemctl enable nginx
+
+verify-web:
+	@echo "==> Web サーバーの動作確認"
+	curl -s http://localhost/health && echo ""
+
+setup-web: setup-hostname-web install-nginx deploy-app setup-todoapp-service configure-nginx verify-web install-alloy setup-alloy-env-web setup-alloy-override-web
+	@echo "==> Alloy 設定ファイルをコピー (Web)"
+	sudo cp $(REPO_DIR)/alloy/web-config.alloy /etc/alloy/config.alloy
+	$(MAKE) start-alloy
+	@echo ""
+	@echo "============================================"
+	@echo " Webサーバーのセットアップが完了しました"
+	@echo "============================================"
+
+# ============================================================
+# 管理サーバー (setup-admin)
+# ============================================================
+
+install-docker:
+	@echo "==> Docker をインストール"
+	sudo dnf -y install docker
+	sudo systemctl start docker
+	sudo systemctl enable docker
+	sudo usermod -aG docker $$USER
+
+setup-lgtm:
+	@echo "==> LGTM スタックを起動"
+	mkdir -p $(HOME)/lgtm/container-data/{grafana,loki,prometheus,pyroscope,tempo}
+	@if docker ps --format '{{.Names}}' | grep -q '^lgtm$$'; then \
+		echo "==> LGTM コンテナは既に起動中"; \
+	else \
+		docker rm -f lgtm 2>/dev/null || true; \
+		docker run \
+			--name lgtm \
+			-d \
+			-p 4317:4317 \
+			-p 4318:4318 \
+			-p 3000:3000 \
+			-p 4040:4040 \
+			-p 9090:9090 \
+			--restart unless-stopped \
+			-v $(HOME)/lgtm/container-data/grafana:/data/grafana \
+			-v $(HOME)/lgtm/container-data/loki:/loki \
+			-v $(HOME)/lgtm/container-data/prometheus:/data/prometheus \
+			-v $(HOME)/lgtm/container-data/pyroscope:/data/pyroscope \
+			-v $(HOME)/lgtm/container-data/tempo:/data/tempo \
+			-e GF_PATHS_DATA=/data/grafana \
+			grafana/otel-lgtm:0.13.0; \
+	fi
+
+configure-tempo:
+	@echo "==> Tempo の設定を変更 (vParquet4)"
+	@if [ -f $(HOME)/lgtm/tempo-config.yaml ] && grep -q 'version: vParquet4' $(HOME)/lgtm/tempo-config.yaml; then \
+		echo "==> Tempo 設定は変更済み"; \
+	else \
+		docker cp lgtm:/otel-lgtm/tempo-config.yaml $(HOME)/lgtm/tempo-config.yaml; \
+		sed -i '/path: \/data\/tempo\/blocks/a\    block:\n      version: vParquet4' $(HOME)/lgtm/tempo-config.yaml; \
+	fi
+	docker rm -f lgtm 2>/dev/null || true
+	docker run \
+		--name lgtm \
+		-d \
+		-p 4317:4317 \
+		-p 4318:4318 \
+		-p 3000:3000 \
+		-p 4040:4040 \
+		-p 9090:9090 \
+		--restart unless-stopped \
+		-v $(HOME)/lgtm/container-data/grafana:/data/grafana \
+		-v $(HOME)/lgtm/container-data/loki:/loki \
+		-v $(HOME)/lgtm/container-data/prometheus:/data/prometheus \
+		-v $(HOME)/lgtm/container-data/pyroscope:/data/pyroscope \
+		-v $(HOME)/lgtm/container-data/tempo:/data/tempo \
+		-v $(HOME)/lgtm/tempo-config.yaml:/otel-lgtm/tempo-config.yaml \
+		-e GF_PATHS_DATA=/data/grafana \
+		grafana/otel-lgtm:0.13.0
+
+verify-admin:
+	@echo "==> LGTM スタックの動作確認"
+	@echo "==> Grafana の起動を待機中..."
+	@for i in $$(seq 1 30); do \
+		if curl -s http://localhost:3000/api/health | grep -q ok; then \
+			echo "==> Grafana 起動確認 OK"; \
+			break; \
+		fi; \
+		sleep 2; \
+	done
+
+setup-admin: setup-hostname-admin install-docker
+	@echo ""
+	@echo "==> docker グループの反映のため sg コマンドで続行します"
+	sg docker -c "$(MAKE) setup-admin-docker"
+
+setup-admin-docker: setup-lgtm configure-tempo verify-admin install-alloy setup-alloy-env-admin
+	@echo "==> Alloy 設定ファイルをコピー (Admin)"
+	sudo cp $(REPO_DIR)/alloy/admin-config.alloy /etc/alloy/config.alloy
+	$(MAKE) start-alloy
+	@echo ""
+	@echo "============================================"
+	@echo " 管理サーバーのセットアップが完了しました"
+	@echo "============================================"

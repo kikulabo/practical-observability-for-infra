@@ -1,0 +1,14 @@
+[Unit]
+Description=ToDoApp - Hands-on Web Application
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/app
+ExecStart=/home/ec2-user/app/todoapp
+Environment=MARIADB_DSN=todoapp:todoapp@tcp(10.0.1.20:3306)/todoapp
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

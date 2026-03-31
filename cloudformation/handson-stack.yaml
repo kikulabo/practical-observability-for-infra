@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Grafana Alloy Hands-on Environment
+  3 EC2 instances (Web / DB / Admin) in a single VPC with public subnets.
+
+Parameters:
+  MyIp:
+    Type: String
+    Description: >
+      Your public IP address for Grafana/Web access (CIDR format, e.g. 203.xxx.xxx.xxx/32).
+      Run "curl http://checkip.amazonaws.com/" to check your IP.
+    AllowedPattern: "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}/32$"
+    ConstraintDescription: "Must be a valid IP address in CIDR format (e.g. 203.xxx.xxx.xxx/32)"
+
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-088103e734f7e0529
+    Description: Amazon Linux 2023 AMI ID in ap-northeast-1
+
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: "10.0.0.0/16"
+    Public:
+      CIDR: "10.0.1.0/24"
+
+Resources:
+  # ============================================================
+  # VPC / Networking
+  # ============================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [SubnetConfig, VPC, CIDR]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: handson-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: handson-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, Public, CIDR]
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: handson-public-subnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: handson-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ============================================================
+  # IAM Role for Session Manager
+  # ============================================================
+  SSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ssm-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  SSMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SSMRole
+
+  # ============================================================
+  # Security Groups
+  # ============================================================
+  WebSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Web server (nginx + Go app)
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # HTTP from my IP only
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref MyIp
+      Tags:
+        - Key: Name
+          Value: handson-web-sg
+
+  DBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for DB server (MySQL)
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # MySQL from VPC
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: !FindInMap [SubnetConfig, VPC, CIDR]
+      Tags:
+        - Key: Name
+          Value: handson-db-sg
+
+  AdminSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Admin server (LGTM stack)
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Grafana from my IP only
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: !Ref MyIp
+        # OpenTelemetry gRPC from VPC
+        - IpProtocol: tcp
+          FromPort: 4317
+          ToPort: 4317
+          CidrIp: !FindInMap [SubnetConfig, VPC, CIDR]
+        # OpenTelemetry HTTP from VPC
+        - IpProtocol: tcp
+          FromPort: 4318
+          ToPort: 4318
+          CidrIp: !FindInMap [SubnetConfig, VPC, CIDR]
+        # Pyroscope from VPC
+        - IpProtocol: tcp
+          FromPort: 4040
+          ToPort: 4040
+          CidrIp: !FindInMap [SubnetConfig, VPC, CIDR]
+        # Prometheus from VPC
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          CidrIp: !FindInMap [SubnetConfig, VPC, CIDR]
+      Tags:
+        - Key: Name
+          Value: handson-admin-sg
+
+  # ============================================================
+  # EC2 Instances
+  # ============================================================
+  WebInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.small
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SubnetId: !Ref PublicSubnet
+      PrivateIpAddress: "10.0.1.10"
+      SecurityGroupIds:
+        - !Ref WebSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: todo-web
+
+  DBInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.small
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SubnetId: !Ref PublicSubnet
+      PrivateIpAddress: "10.0.1.20"
+      SecurityGroupIds:
+        - !Ref DBSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: todo-db
+
+  AdminInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.small
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SubnetId: !Ref PublicSubnet
+      PrivateIpAddress: "10.0.1.30"
+      SecurityGroupIds:
+        - !Ref AdminSG
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: todo-admin
+
+  # ============================================================
+  # Elastic IPs
+  # ============================================================
+  WebEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: handson-web-eip
+
+  WebEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref WebInstance
+      AllocationId: !GetAtt WebEIP.AllocationId
+
+  DBEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: handson-db-eip
+
+  DBEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref DBInstance
+      AllocationId: !GetAtt DBEIP.AllocationId
+
+  AdminEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: handson-admin-eip
+
+  AdminEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref AdminInstance
+      AllocationId: !GetAtt AdminEIP.AllocationId
+
+Outputs:
+  WebPublicIP:
+    Description: Web server public IP
+    Value: !Ref WebEIP
+
+  WebPrivateIP:
+    Description: Web server private IP
+    Value: !GetAtt WebInstance.PrivateIp
+
+  DBPublicIP:
+    Description: DB server public IP
+    Value: !Ref DBEIP
+
+  DBPrivateIP:
+    Description: DB server private IP
+    Value: !GetAtt DBInstance.PrivateIp
+
+  AdminPublicIP:
+    Description: Admin server public IP
+    Value: !Ref AdminEIP
+
+  AdminPrivateIP:
+    Description: Admin server private IP
+    Value: !GetAtt AdminInstance.PrivateIp
+
+  SessionManagerURLWeb:
+    Description: Session Manager URL for Web server
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${WebInstance}"
+
+  SessionManagerURLDB:
+    Description: Session Manager URL for DB server
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${DBInstance}"
+
+  SessionManagerURLAdmin:
+    Description: Session Manager URL for Admin server
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${AdminInstance}"
