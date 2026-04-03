@@ -71,7 +71,7 @@ prometheus.exporter.unix "host" {
 
 prometheus.scrape "unix" {
   targets         = prometheus.exporter.unix.host.targets
-  scrape_interval = "5s"
+  scrape_interval = "60s"
   scrape_timeout  = "4s"
   job_name        = "integrations/unix"
   forward_to      = [otelcol.receiver.prometheus.default.receiver]
