@@ -9,9 +9,6 @@
 
 SHELL := /bin/bash
 
-# ソフトウェアバージョン
-GO_VERSION ?= 1.26.0
-
 # リポジトリルート（クローン先）
 REPO_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 
@@ -29,9 +26,6 @@ help: ## ヘルプを表示
 	@echo "  make setup-db       DBサーバーのセットアップ"
 	@echo "  make setup-web      Webサーバーのセットアップ"
 	@echo "  make setup-admin    管理サーバーのセットアップ"
-	@echo ""
-	@echo "Options:"
-	@echo "  GO_VERSION=x.x.x         Goのバージョン (default: 1.26.0)"
 
 # ------------------------------------------------------------
 # ホスト名設定
@@ -150,27 +144,11 @@ install-nginx:
 	@echo "==> nginx をインストール"
 	sudo dnf -y install nginx
 
-install-go:
-	@echo "==> Go $(GO_VERSION) をインストール"
-	@if /usr/local/go/bin/go version 2>/dev/null | grep -q "go$(GO_VERSION)"; then \
-		echo "==> Go $(GO_VERSION) はインストール済み"; \
-	else \
-		wget -q https://go.dev/dl/go$(GO_VERSION).linux-amd64.tar.gz -O /tmp/go.tar.gz; \
-		sudo rm -rf /usr/local/go; \
-		sudo tar -C /usr/local -xzf /tmp/go.tar.gz; \
-		rm -f /tmp/go.tar.gz; \
-	fi
-	@grep -q '/usr/local/go/bin' $(HOME)/.bashrc || echo 'export PATH=$$PATH:/usr/local/go/bin' >> $(HOME)/.bashrc
-	@echo "==> Go インストール完了: $$(/usr/local/go/bin/go version)"
-
-build-app:
-	@echo "==> ToDoApp をビルド"
+deploy-app:
+	@echo "==> ToDoApp を配置"
 	mkdir -p $(HOME)/app
-	cp $(REPO_DIR)/app/main.go $(HOME)/app/main.go
-	cd $(HOME)/app && \
-		test -f go.mod || PATH=$$PATH:/usr/local/go/bin go mod init todoapp; \
-		PATH=$$PATH:/usr/local/go/bin go mod tidy; \
-		PATH=$$PATH:/usr/local/go/bin go build -o todoapp main.go
+	cp $(REPO_DIR)/app/todoapp $(HOME)/app/todoapp
+	chmod +x $(HOME)/app/todoapp
 
 setup-todoapp-service:
 	@echo "==> ToDoApp の systemd ユニットを設定"
@@ -204,7 +182,7 @@ verify-web:
 	@echo "==> Web サーバーの動作確認"
 	curl -s http://localhost/health && echo ""
 
-setup-web: setup-hostname-web install-nginx install-go build-app setup-todoapp-service configure-nginx verify-web install-alloy setup-alloy-env-web setup-alloy-override-web
+setup-web: setup-hostname-web install-nginx deploy-app setup-todoapp-service configure-nginx verify-web install-alloy setup-alloy-env-web setup-alloy-override-web
 	@echo "==> Alloy 設定ファイルをコピー (Web)"
 	sudo cp $(REPO_DIR)/alloy/web-config.alloy /etc/alloy/config.alloy
 	$(MAKE) start-alloy
