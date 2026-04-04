@@ -120,10 +120,60 @@ pyroscope.ebpf "default" {
   forward_to = [pyroscope.write.admin.receiver]
 }
 
-loki.source.file "mariadb" {
+loki.source.file "mariadb_error" {
   targets = [
     {__path__ = "/var/log/mariadb/error.log", job = "mariadb", type = "error"},
-    {__path__ = "/var/log/mariadb/slow.log",  job = "mariadb", type = "slow"},
   ]
   forward_to = [otelcol.receiver.loki.default.receiver]
+}
+
+loki.source.file "mariadb_slow" {
+  targets = [
+    {__path__ = "/var/log/mariadb/slow.log",  job = "mariadb", type = "slow"},
+  ]
+  forward_to = [loki.process.mariadb_slowlog.receiver]
+}
+
+// 複数行のマージ + メタデータ抽出
+loki.process "mariadb_slowlog" {
+  forward_to = [otelcol.receiver.loki.default.receiver]
+
+  // 複数行を1エントリにまとめる。先頭行のパターン: "# Time:"
+  stage.multiline {
+    firstline     = "^# Time:"
+    max_wait_time = "5s"
+    max_lines     = 1000
+  }
+
+  // ラベルとして抽出
+  stage.regex {
+    expression = "# Query_time: (?P<query_time>[0-9.]+)\\s+Lock_time: (?P<lock_time>[0-9.]+)\\s+Rows_sent: (?P<rows_sent>\\d+)\\s+Rows_examined: (?P<rows_examined>\\d+)"
+  }
+
+  // メタデータ化
+  stage.structured_metadata {
+    values = {
+      query_time    = "query_time",
+      lock_time     = "lock_time",
+      rows_sent     = "rows_sent",
+      rows_examined = "rows_examined",
+    }
+  }
+
+  // 静的ラベル付与
+  stage.static_labels {
+    values = {
+      log_type = "slow_query",
+    }
+  }
+
+  // タイムスタンプを# Time: 行から抽出
+  stage.regex {
+    expression = "# Time: (?P<log_time>\\S+)"
+  }
+
+  stage.timestamp {
+    source = "log_time"
+    format = "2006-01-02T15:04:05.000000Z"
+  }
 }
