@@ -73,7 +73,7 @@ setup-alloy-env-web:
 
 setup-alloy-env-db:
 	@echo "==> Alloy 環境変数を設定 (DB)"
-	@printf 'CUSTOM_ARGS="--stability.level=generally-available"\nCONFIG_FILE="/etc/alloy/config.alloy"\nALLOY_LGTM_OTELCOL_URL="10.0.1.30:4317"\nALLOY_MYSQL_DSN="todoapp:todoapp@(localhost:3306)/todoapp"\nALLOY_PYROSCOPE_URL="http://10.0.1.30:4040"\n' | sudo tee /etc/sysconfig/alloy > /dev/null
+	@printf 'CUSTOM_ARGS="--stability.level=generally-available"\nCONFIG_FILE="/etc/alloy/config.alloy"\nALLOY_LGTM_OTELCOL_URL="10.0.1.30:4317"\nALLOY_MARIADB_DSN="todoapp:todoapp@(localhost:3306)/todoapp"\nALLOY_PYROSCOPE_URL="http://10.0.1.30:4040"\n' | sudo tee /etc/sysconfig/alloy > /dev/null
 
 setup-alloy-env-admin:
 	@echo "==> Alloy 環境変数を設定 (Admin)"
@@ -95,61 +95,43 @@ start-alloy:
 # DBサーバー (setup-db)
 # ============================================================
 
-install-mysql:
-	@echo "==> MySQL をインストール"
-	@if ! rpm -q mysql84-community-release > /dev/null 2>&1; then \
-		sudo dnf -y install https://dev.mysql.com/get/mysql84-community-release-el9-3.noarch.rpm; \
-		sudo sed -i 's/$$releasever/9/g' /etc/yum.repos.d/mysql-community*.repo; \
-	else \
-		echo "==> MySQL リポジトリは追加済み"; \
-	fi
-	sudo dnf -y install mysql-community-server
+install-mariadb:
+	@echo "==> MariaDB をインストール"
+	sudo dnf -y install mariadb105-server
 
-start-mysql:
-	@echo "==> MySQL を起動"
-	sudo systemctl start mysqld
-	sudo systemctl enable mysqld
+start-mariadb:
+	@echo "==> MariaDB を起動"
+	sudo systemctl start mariadb
+	sudo systemctl enable mariadb
 
-init-mysql:
-	@echo "==> MySQL を初期設定"
-	@if mysql -u root -proot -e "SELECT 1" > /dev/null 2>&1; then \
-		echo "==> MySQL は初期設定済み (root パスワード確認OK)"; \
-	else \
-		TEMP_PASS=$$(sudo grep 'temporary password' /var/log/mysqld.log | tail -1 | awk '{print $$NF}'); \
-		echo "==> 一時パスワード: $$TEMP_PASS"; \
-		mysql -u root -p"$$TEMP_PASS" --connect-expired-password -e " \
-			ALTER USER 'root'@'localhost' IDENTIFIED BY 'Temp_1234'; \
-			UNINSTALL COMPONENT 'file://component_validate_password'; \
-			ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';"; \
-	fi
+init-mariadb:
+	@echo "==> MariaDB を初期設定"
 	@echo "==> アプリケーション用 DB を作成"
-	@if mysql -u root -proot -e "USE todoapp; SELECT 1 FROM todos LIMIT 1" > /dev/null 2>&1; then \
+	@if sudo mysql -u root -e "USE todoapp; SELECT 1 FROM todos LIMIT 1" > /dev/null 2>&1; then \
 		echo "==> todoapp データベースは作成済み"; \
 	else \
-		mysql -u root -proot < $(REPO_DIR)/mysql/init.sql; \
+		sudo mysql -u root < $(REPO_DIR)/mariadb/init.sql; \
 	fi
 	@echo "==> todoapp ユーザーの権限を確認"
-	@mysql -u root -proot -e "GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'todoapp'@'%'; FLUSH PRIVILEGES;" 2>/dev/null || true
+	@sudo mysql -u root -e "GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'todoapp'@'%'; FLUSH PRIVILEGES;" 2>/dev/null || true
 
-configure-mysql:
-	@echo "==> MySQL の設定を変更 (bind-address, ログ)"
-	@# /etc/my.cnf の [mysqld] セクションに設定を追記（chapter2.txt の手順と同じ）
-	@if ! grep -q 'bind-address' /etc/my.cnf; then \
-		sudo sed -i 's|^log-error=.*|# log-error=/var/log/mysqld.log|' /etc/my.cnf; \
-		sudo sed -i '/^\[mysqld\]/a\bind-address = 0.0.0.0\n\nlog_error = /var/log/mysql/error.log\nslow_query_log = 1\nslow_query_log_file = /var/log/mysql/slow.log\nlong_query_time = 0' /etc/my.cnf; \
+configure-mariadb:
+	@echo "==> MariaDB の設定を変更 (bind-address, ログ)"
+	@if ! grep -q 'bind-address' /etc/my.cnf.d/mariadb-server.cnf; then \
+		sudo sed -i '/^\[mysqld\]/a\bind-address = 0.0.0.0\n\nlog_error = /var/log/mariadb/error.log\nslow_query_log = 1\nslow_query_log_file = /var/log/mariadb/slow.log\nlong_query_time = 0' /etc/my.cnf.d/mariadb-server.cnf; \
 	else \
-		echo "==> MySQL の設定は追記済み"; \
+		echo "==> MariaDB の設定は追記済み"; \
 	fi
-	sudo mkdir -p /var/log/mysql
-	sudo chown mysql:mysql /var/log/mysql
-	sudo systemctl restart mysqld
+	sudo mkdir -p /var/log/mariadb
+	sudo chown mysql:mysql /var/log/mariadb
+	sudo systemctl restart mariadb
 
-verify-mysql:
-	@echo "==> MySQL の動作確認"
-	sudo systemctl status mysqld --no-pager
+verify-mariadb:
+	@echo "==> MariaDB の動作確認"
+	sudo systemctl status mariadb --no-pager
 	mysql -u todoapp -ptodoapp -e "USE todoapp; SELECT COUNT(*) AS todo_count FROM todos;"
 
-setup-db: setup-hostname-db install-mysql start-mysql init-mysql configure-mysql verify-mysql install-alloy setup-alloy-env-db
+setup-db: setup-hostname-db install-mariadb start-mariadb init-mariadb configure-mariadb verify-mariadb install-alloy setup-alloy-env-db
 	@echo "==> Alloy ユーザーを mysql グループに追加"
 	sudo usermod -aG mysql alloy
 	@echo "==> Alloy 設定ファイルをコピー (DB)"

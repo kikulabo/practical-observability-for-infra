@@ -77,16 +77,16 @@ prometheus.scrape "unix" {
   forward_to      = [otelcol.receiver.prometheus.default.receiver]
 }
 
-// MySQL metrics
-prometheus.exporter.mysql "mysql" {
-  data_source_name = sys.env("ALLOY_MYSQL_DSN")
+// MariaDB metrics
+prometheus.exporter.mysql "mariadb" {
+  data_source_name = sys.env("ALLOY_MARIADB_DSN")
 }
 
-prometheus.scrape "mysql" {
-  targets         = prometheus.exporter.mysql.mysql.targets
+prometheus.scrape "mariadb" {
+  targets         = prometheus.exporter.mysql.mariadb.targets
   scrape_interval = "60s"
   scrape_timeout  = "4s"
-  job_name        = "integrations/mysql"
+  job_name        = "integrations/mariadb"
   forward_to      = [otelcol.receiver.prometheus.default.receiver]
 }
 
@@ -120,10 +120,10 @@ pyroscope.ebpf "default" {
   forward_to = [pyroscope.write.admin.receiver]
 }
 
-loki.source.file "mysql" {
+loki.source.file "mariadb" {
   targets = [
-    {__path__ = "/var/log/mysql/error.log", job = "mysql", type = "error"},
-    {__path__ = "/var/log/mysql/slow.log",  job = "mysql", type = "slow"},
+    {__path__ = "/var/log/mariadb/error.log", job = "mariadb", type = "error"},
+    {__path__ = "/var/log/mariadb/slow.log",  job = "mariadb", type = "slow"},
   ]
   forward_to = [otelcol.receiver.loki.default.receiver]
 }

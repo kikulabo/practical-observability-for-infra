@@ -7,7 +7,7 @@ Type=simple
 User=ec2-user
 WorkingDirectory=/home/ec2-user/app
 ExecStart=/home/ec2-user/app/todoapp
-Environment=MYSQL_DSN=todoapp:todoapp@tcp(10.0.1.20:3306)/todoapp
+Environment=MARIADB_DSN=todoapp:todoapp@tcp(10.0.1.20:3306)/todoapp
 Restart=always
 
 [Install]

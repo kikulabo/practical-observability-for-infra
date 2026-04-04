@@ -62,9 +62,9 @@ var tmpl = template.Must(template.New("index").Parse(`
 `))
 
 func main() {
-	dsn := os.Getenv("MYSQL_DSN")
+	dsn := os.Getenv("MARIADB_DSN")
 	if dsn == "" {
-		log.Fatal("MYSQL_DSN is not set")
+		log.Fatal("MARIADB_DSN is not set")
 	}
 
 	var err error
