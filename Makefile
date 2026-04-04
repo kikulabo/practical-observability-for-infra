@@ -71,7 +71,7 @@ setup-alloy-env-db:
 
 setup-alloy-env-admin:
 	@echo "==> Alloy 環境変数を設定 (Admin)"
-	@printf 'CUSTOM_ARGS="--stability.level=generally-available"\nCONFIG_FILE="/etc/alloy/config.alloy"\nALLOY_LGTM_OTELCOL_URL="localhost:4317"\nALLOY_PYROSCOPE_URL="http://localhost:4040"\n' | sudo tee /etc/sysconfig/alloy > /dev/null
+	@printf 'CUSTOM_ARGS="--stability.level=generally-available"\nCONFIG_FILE="/etc/alloy/config.alloy"\nALLOY_LGTM_OTELCOL_URL="10.0.1.30:4317"\nALLOY_PYROSCOPE_URL="http://10.0.1.30:4040"\n' | sudo tee /etc/sysconfig/alloy > /dev/null
 
 setup-alloy-override-web:
 	@echo "==> Alloy systemd override を設定 (eBPF 用)"
