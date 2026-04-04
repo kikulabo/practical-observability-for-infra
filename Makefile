@@ -158,7 +158,6 @@ setup-db: setup-hostname-db install-mysql start-mysql init-mysql configure-mysql
 	@echo ""
 	@echo "============================================"
 	@echo " DBサーバーのセットアップが完了しました"
-	@echo " reboot 後にホスト名が反映されます"
 	@echo "============================================"
 
 # ============================================================
@@ -230,7 +229,6 @@ setup-web: setup-hostname-web install-nginx install-go build-app setup-todoapp-s
 	@echo ""
 	@echo "============================================"
 	@echo " Webサーバーのセットアップが完了しました"
-	@echo " reboot 後にホスト名が反映されます"
 	@echo "============================================"
 
 # ============================================================
@@ -319,5 +317,4 @@ setup-admin-docker: setup-lgtm configure-tempo verify-admin install-alloy setup-
 	@echo ""
 	@echo "============================================"
 	@echo " 管理サーバーのセットアップが完了しました"
-	@echo " reboot 後にホスト名が反映されます"
 	@echo "============================================"
