@@ -111,7 +111,7 @@ init-mariadb:
 
 configure-mariadb:
 	@echo "==> MariaDB の設定を変更 (bind-address, ログ)"
-	@if ! grep -q 'bind-address' /etc/my.cnf.d/mariadb-server.cnf; then \
+	@if ! grep -q '^bind-address' /etc/my.cnf.d/mariadb-server.cnf; then \
 		sudo sed -i '/^\[mysqld\]/a\bind-address = 0.0.0.0\n\nlog_error = /var/log/mariadb/error.log\nslow_query_log = 1\nslow_query_log_file = /var/log/mariadb/slow.log\nlong_query_time = 0' /etc/my.cnf.d/mariadb-server.cnf; \
 	else \
 		echo "==> MariaDB の設定は追記済み"; \
