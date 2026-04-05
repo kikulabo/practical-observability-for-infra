@@ -116,8 +116,6 @@ configure-mariadb:
 	else \
 		echo "==> MariaDB の設定は追記済み"; \
 	fi
-	sudo mkdir -p /var/log/mariadb
-	sudo chown mysql:mysql /var/log/mariadb
 	sudo systemctl restart mariadb
 
 verify-mariadb:
