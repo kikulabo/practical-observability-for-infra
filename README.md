@@ -41,7 +41,6 @@ $ sudo su - ec2-user
 $ sudo dnf upgrade
 $ sudo dnf -y install git make
 $ git clone https://github.com/kikulabo/practical-observability-for-infra.git ~/handson
-$ cd ~/handson
 ```
 
 ### 3. makeコマンドでセットアップ
@@ -49,6 +48,7 @@ $ cd ~/handson
 各サーバーで対応するコマンドを実行するだけで、ミドルウェアのインストールからAlloyの起動まで一括で行えます。
 
 ```bash
+$ cd ~/handson
 # Webサーバーで実行
 $ make setup-web
 # DBサーバーで実行
@@ -99,10 +99,9 @@ $ sudo su - ec2-user
 $ sudo dnf upgrade
 $ sudo dnf -y install git make
 $ git clone https://github.com/kikulabo/practical-observability-for-infra.git ~/handson
-$ cd ~/handson
 ```
 
-### 2-5. ホスト名の設定（全サーバー共通）
+### 2-4. ホスト名の設定（全サーバー共通）
 
 ```
 # 各サーバーにログインし以下のコマンドを実行
@@ -128,7 +127,7 @@ sudo hostnamectl set-hostname todo-admin
 
 設定したらSession Managerでインスタンスに接続し直すとホスト名が反映される。
 
-### 2-6. DBサーバーのセットアップ
+### 2-5. DBサーバーのセットアップ
 
 MariaDBをインストール
 
@@ -184,7 +183,7 @@ $ sudo systemctl status mariadb
 $ mysql -u todoapp -p -e "USE todoapp; SELECT COUNT(*) AS todo_count FROM todos;"
 ```
 
-### 2-7. Webサーバーのセットアップ
+### 2-6. Webサーバーのセットアップ
 
 nginxをインストール
 
@@ -258,7 +257,7 @@ $ sudo systemctl start nginx
 $ sudo systemctl enable nginx
 ```
 
-### 2-8. 管理サーバーのセットアップ
+### 2-7. 管理サーバーのセットアップ
 
 Dockerをインストール
 
@@ -339,7 +338,7 @@ $ docker run \
   grafana/otel-lgtm:0.13.0
 ```
 
-### 2-9. Grafana Alloyのインストール
+### 2-8. Grafana Alloyのインストール
 
 GrafanaのRPMリポジトリーを追加し、Alloyをインストール
 
@@ -378,7 +377,7 @@ $ sudo systemctl edit alloy
 
 nanoエディターで保存して閉じる際は `Ctrl + X` 、`Y` 、`Enter` の順にキーを入力
 
-### 2-10. 環境変数の設定
+### 2-9. 環境変数の設定
 
 各サーバーの `/etc/sysconfig/alloy` 環境変数を設定
 
@@ -409,7 +408,7 @@ ALLOY_PYROSCOPE_URL="http://10.0.1.30:4040"
 EOF
 ```
 
-### 2-11. Alloyの設定ファイ
+### 2-10. Alloyの設定ファイル
 
 リポジトリーに含まれるAlloyの設定ファイルを、各サーバーの /etc/alloy/config.alloy にコピー
 DBサーバーでは、AlloyがMariaDBのログファイルを読み取れるよう、alloyユーザーをmysqlグループに追加
@@ -468,7 +467,7 @@ CPU使用率を表示
 利用可能メモリーの割合を表示
 
 ```
-node_memory_MemAvailable_bytes /node_memory_MemTotal_bytes
+node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
 ```
 
 MariaDB接続数を表示
@@ -540,7 +539,7 @@ POSTリクエストのトレースだけを表示
 todosテーブルにREADロックをかける
 
 ```
-$ sudo mysql -u root -proot todoapp -e "LOCK TABLES todos READ; SELECT SLEEP(60);"
+$ sudo mysql -u root todoapp -e "LOCK TABLES todos READ; SELECT SLEEP(60);"
 ```
 
 レスポンス確認
@@ -572,14 +571,42 @@ rate(mysql_global_status_queries[5m])
 {duration > 10s}
 ```
 
+### 5-6. （分析）ログで原因を絞り込む
+
 10秒以上時間がかかったスロークエリーログを表示
 
 ```
-{service_name="mariadb"} | type = "slow"| query_time > 10
+{service_name="mariadb"} | type = "slow" | query_time > 10
 ```
 
 
 ### 6-4. ネットワーク系コレクターを追加する
+
+TCPソケットの割り当て数を表示
+
+```
+node_sockstat_TCP_alloc
+```
+
+TIME_WAIT状態のTCPソケット数を表示
+
+```
+node_sockstat_TCP_tw
+```
+
+Webサーバーに対してリクエストを繰り返し送る
+
+```
+for i in $(seq 1 100); do curl -s http://WEB_SERVER_PUBLIC_IP/health > /dev/null; done
+```
+
+TCPソケットが使用しているメモリー量を表示
+
+```
+node_sockstat_TCP_mem_bytes
+```
+
+Alloyの設定ファイルを編集
 
 ```
 $ sudo vim /etc/alloy/config.alloy
@@ -600,4 +627,16 @@ Alloyを再起動
 # Webサーバーで実行
 $ sudo systemctl restart alloy
 $ sudo systemctl status alloy
+```
+
+buddyinfoメトリクスを表示
+
+```
+node_buddyinfo_blocks
+```
+
+DMA32ゾーンのsize 0の空き数を表示
+
+```
+node_buddyinfo_blocks{zone="DMA32", size="0"}
 ```
